@@ -149,6 +149,36 @@ class MinimizeTests(unittest.TestCase):
         with self.assertRaisesRegex(ReproSliceError, "inconsistent across repeats"):
             self.run_minimize(check=command)
 
+    def test_signature_metacharacters_match_literal_text(self):
+        self.write("message.txt", b"E[42]\n")
+        check = "if grep -Fq 'E[42]' message.txt; then printf 'E[42]\\n'; exit 1; else echo ok; fi"
+        result = self.run_minimize(check=check, signature="E[42]")
+        self.assertEqual(result.report["signature_kind"], "literal")
+        self.assertEqual(result.report["signature"], "E[42]")
+
+    def test_pathological_regex_text_is_bounded_by_literal_matching(self):
+        self.write("unused.txt", b"noise")
+        check_code = "print('a' * 30 + '!'); raise SystemExit(1)"
+        command = "python3 -c " + shlex.quote(check_code)
+        src = Path(__file__).resolve().parents[1] / "src"
+        supervisor = (
+            "import sys\n"
+            "sys.path.insert(0, " + repr(str(src)) + ")\n"
+            "from pathlib import Path\n"
+            "from reproslice.engine import minimize, ReproSliceError\n"
+            "try:\n    minimize(Path(" + repr(str(self.repo)) + "), " + repr(self.base) + ", " +
+            repr(command) + ", '(a+)+$', timeout=1, max_checks=6, repeats=2)\n"
+            "except ReproSliceError as e:\n    print(str(e))\n    sys.exit(0 if 'incidental failure' in str(e) else 3)\n"
+            "sys.exit(4)\n"
+        )
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        result = subprocess.run([sys.executable, "-c", supervisor], text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=3, env=env, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("incidental failure", result.stdout)
+
     def test_timeout_and_output_overflow_are_inconclusive(self):
         self.write("tracked.txt", b"BUGSIG")
         with self.assertRaisesRegex(ReproSliceError, "timed out"):
@@ -231,6 +261,8 @@ class MinimizeTests(unittest.TestCase):
     def test_empty_signature_is_invalid(self):
         with self.assertRaisesRegex(ReproSliceError, "must be nonempty"):
             self.run_minimize(signature="")
+        with self.assertRaisesRegex(ReproSliceError, "must be nonempty"):
+            self.run_minimize(signature=" \t\n")
         with self.assertRaisesRegex(ReproSliceError, "at least 2"):
             self.run_minimize(repeats=1)
 

@@ -7,7 +7,6 @@ import hashlib
 import math
 import os
 from pathlib import Path, PurePosixPath
-import re
 import selectors
 import shutil
 import signal
@@ -221,19 +220,16 @@ def minimize(
     """Reduce tracked changes by whole-file ddmin and verify single deletions.
 
     ``check`` is trusted shell input and runs in disposable worktrees; it is not
-    an operating-system sandbox. Candidate checks are bounded by ``timeout``
+    an operating-system sandbox. ``signature`` is case-sensitive literal text.
+    Candidate checks are bounded by ``timeout``
     and one MiB of captured output per execution. A detached descendant that
     keeps stdout open makes the result inconclusive; escaped processes are not
     sandboxed or fully reclaimed.
     """
     if not isinstance(check, str) or not check.strip():
         raise ReproSliceError("check command must be a nonempty string")
-    if not isinstance(signature, str) or not signature:
-        raise ReproSliceError("signature regex must be nonempty")
-    try:
-        matcher = re.compile(signature)
-    except re.error as exc:
-        raise ReproSliceError(f"invalid signature regex: {exc}") from exc
+    if not isinstance(signature, str) or not signature.strip():
+        raise ReproSliceError("signature text must be nonempty")
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
         raise ReproSliceError("timeout must be a positive number")
     if not math.isfinite(float(timeout)):
@@ -266,9 +262,9 @@ def minimize(
             checks_run += 1
             if outcome == "inconclusive":
                 raise ReproSliceError(f"candidate check was inconclusive: {detail}")
-            target = outcome == "exit-nonzero" and matcher.search(detail) is not None
+            target = outcome == "exit-nonzero" and signature in detail
             if outcome == "exit-nonzero" and not target:
-                raise ReproSliceError("candidate had a nonzero exit without the requested signature; treating it as an incidental failure")
+                raise ReproSliceError("candidate had a nonzero exit without the requested signature text; treating it as an incidental failure")
             outcomes.append("target" if target else "pass")
         if len(set(outcomes)) != 1:
             raise ReproSliceError("candidate result was inconsistent across repeats")
@@ -351,6 +347,7 @@ def minimize(
             "source_fingerprint": fingerprint,
             "check": check,
             "signature": signature,
+            "signature_kind": "literal",
             "checks_run": checks_run,
             "initial_files": files,
             "kept_files": kept,
