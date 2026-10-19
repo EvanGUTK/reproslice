@@ -49,14 +49,14 @@ PYTHONPATH=src python3 -m reproslice minimize \
   --output /tmp/reproslice-result
 ```
 
-The bundled demo was verified through the installed CLI: three changed files reduced to one in 16 check executions. Its report includes:
+The bundled demo was verified through the installed CLI: three changed files reduced to one in 14 check executions. Its report includes:
 
 ```json
 {
   "status": "file_minimal",
   "kept_files": ["calculator.py"],
   "dropped_files": ["messages.py", "notes.txt"],
-  "checks_run": 16
+  "checks_run": 14
 }
 ```
 
@@ -98,7 +98,7 @@ Original source files and the index stay in place. Generated artifacts are publi
 
 ## What the result means
 
-ReproSlice requires a passing base, repeated reproduction from the full patch, and final repeated reproduction from the reduced patch. A target failure must exit with a code from 1 through 127 **and** have output matching your regex. Higher exit codes are conservatively treated as abnormal. An unrelated error or timeout is not the target failure.
+ReproSlice requires a passing base, repeated reproduction from the full patch, and final repeated reproduction from the reduced patch. A target failure must exit with a code from 1 through 127 **and** have output matching your exact, case-sensitive text. Higher exit codes are conservatively treated as abnormal. An unrelated normal error rejects a reduction trial, preserving dependencies needed to reach the intended failure. Baseline, full-patch, and final checks are strict. Timeouts, incomplete output, overflow, abnormal exits, and inconsistent repeats stop the operation as inconclusive.
 
 | Exit | Meaning |
 |---|---|
@@ -107,13 +107,13 @@ ReproSlice requires a passing base, repeated reproduction from the full patch, a
 | `2` | Invalid input, setup, or reproduction failure. No successful artifact bundle is published. |
 | `130` | Interrupted by the user. |
 
-**1-minimal is not globally smallest.** Files are the reduction unit in this release. A matching signature is a practical failure identifier, not proof of the same root cause. Repetition catches some instability; it cannot prove a test will always behave the same way.
+**1-minimal is not globally smallest.** Files are the reduction unit in this release. A matching literal signature is a practical failure identifier, not proof of the same root cause. Regex syntax is not interpreted. Repetition catches some instability; it cannot prove a test will always behave the same way.
 
 `--max-checks` includes baseline and verification executions. `--timeout` bounds each check, not total wall time. Git operations, environment setup, and process cleanup also take time.
 
 ## Trust and isolation
 
-Disposable checkouts isolate repository files. **They are not a security sandbox.** The supplied command and checked-out code run with your user permissions and may access the network, credentials, services, or absolute paths. Use trusted code and a trusted check. Do not execute commands copied from an untrusted agent transcript.
+Disposable checkouts isolate repository files. **They are not a security sandbox.** Checks must keep their subprocesses in the supervised process group; intentionally detached processes are not contained, and inherited output pipes can make the run inconclusive. The supplied command and checked-out code run with your user permissions and may access the network, credentials, services, or absolute paths. Use trusted code and a trusted check. Do not execute commands copied from an untrusted agent transcript.
 
 The bundle is a patch and instructions, not a hermetic environment. It does not package dependencies or external service state. Reports include the supplied command and paths; review artifacts before sharing them.
 

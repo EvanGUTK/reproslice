@@ -19,7 +19,7 @@ This increment reduces code changes, not prompts, model behavior, tool-call hist
 - Independent Validator and CodeRabbit review precede a topic-branch push; the user approves merges.
 
 ## Budget and delivery
-No paid APIs or recurring services. CPU time is bounded by explicit command-count and per-command time limits. One user-testable increment is authorized; later increments require feedback. Achievement progress comes from meaningful merged PRs and correct attribution, not a predetermined volume of trivial changes.
+No paid APIs or recurring services. The command budget and per-command timeout constrain check execution; neither is a total wall-time guarantee. One user-testable increment is authorized; later increments require feedback. Achievement progress comes from meaningful merged PRs and correct attribution, not a predetermined volume of trivial changes.
 
 ## Repository discovery
 This is a fresh repository. PROJECT.md, ARCHITECTURE.md, and TASKS.md did not exist at discovery; these documents establish the approved contracts rather than infer project facts.

@@ -38,7 +38,7 @@ class CliTests(unittest.TestCase):
         return code, stdout.getvalue(), stderr.getvalue()
 
     def report(self, status="file_minimal"):
-        return {"schema_version": 1, "status": status, "base_commit": "a"*40, "source_fingerprint": "b"*64, "check": "python3 check.py", "signature": SIGNATURE, "checks_run": 8, "initial_files": ["calculator.py", "notes.txt"], "kept_files": ["calculator.py"], "dropped_files": ["notes.txt"], "repeats": 2, "timeout_seconds": 30}
+        return {"schema_version": 1, "signature_kind": "literal", "status": status, "base_commit": "a"*40, "source_fingerprint": "b"*64, "check": "python3 check.py", "signature": SIGNATURE, "checks_run": 8, "initial_files": ["calculator.py", "notes.txt"], "kept_files": ["calculator.py"], "dropped_files": ["notes.txt"], "repeats": 2, "timeout_seconds": 30}
 
     def test_rejects_output_inside_source_before_running_checks(self):
         with patch("reproslice.cli.minimize") as engine:

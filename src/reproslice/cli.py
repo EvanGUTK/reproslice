@@ -22,7 +22,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--repo", type=Path, default=Path.cwd(), help="Source repository (default: current directory).")
     run.add_argument("--base", required=True, help="Commit at which the check passes.")
     run.add_argument("--check", required=True, help="Trusted shell command; runs in disposable checkouts, not an OS sandbox.")
-    run.add_argument("--signature", required=True, help="Nonempty regex identifying the target failure in command output.")
+    run.add_argument("--signature", required=True, help="Exact, case-sensitive text identifying the target failure (not a regex).")
     run.add_argument("--output", type=Path, required=True, help="New artifact directory outside the source checkout.")
     run.add_argument("--timeout", type=float, default=30.0, help="Seconds per check (default: 30).")
     run.add_argument("--max-checks", type=int, default=100, help="Maximum actual check executions, including verification (default: 100).")

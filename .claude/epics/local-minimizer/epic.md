@@ -19,6 +19,10 @@ Engine and CLI implement against a fixed result contract. Final integration requ
 - [ ] #2 Isolated engine and regression tests.
 - [ ] #3 CLI, artifacts, demo and skill.
 - [ ] #4 Engineering documentation and independent verification.
+- [ ] #5 Demo Git environment isolation.
+- [ ] #6 Bound output cleanup for detached children.
+- [ ] #7 Use bounded literal failure matching.
+- [ ] #8 Preserve dependent-file reductions and reuse the passing base.
 
 ## Budget and rollback
 No recurring services. Bounded local command executions. Scope is one first increment. Revert focused commits for implementation rollback; original user source is never reset.
