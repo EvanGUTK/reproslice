@@ -116,7 +116,16 @@ def _run_command(repo: Path, base: str, patch: bytes, command: str, timeout: flo
         timed_out = False
         overflow = False
         leader_exited_before_cleanup = False
+        group_cleaned_after_leader_exit = False
         while process.poll() is None or not pipe_eof:
+            if process.poll() is not None and not pipe_eof and not group_cleaned_after_leader_exit:
+                # Same-group background children can keep the pipe open after
+                # the check exits. Stop those children, then drain to EOF.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                group_cleaned_after_leader_exit = True
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True

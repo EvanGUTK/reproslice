@@ -200,9 +200,25 @@ class MinimizeTests(unittest.TestCase):
 
     def test_background_descendants_are_killed_after_shell_exit(self):
         self.write("tracked.txt", b"BUGSIG")
-        command = "if grep -q BUGSIG tracked.txt 2>/dev/null; then sleep 30 >/dev/null 2>&1 & echo BUGSIG; exit 1; else echo ok; fi"
-        result = self.run_minimize(check=command, timeout=3)
-        self.assertEqual(result.report["status"], "file_minimal")
+        pid_file = Path(self.temp.name) / "same-group-pids"
+        command = ("if grep -q BUGSIG tracked.txt 2>/dev/null; then sleep 30 & echo $! >> " +
+                   shlex.quote(str(pid_file)) + "; echo BUGSIG; exit 1; else echo ok; fi")
+        try:
+            result = self.run_minimize(check=command, timeout=3)
+            self.assertEqual(result.report["status"], "file_minimal")
+            for pid_text in pid_file.read_text().splitlines():
+                stat_path = Path("/proc") / pid_text / "stat"
+                if stat_path.exists():
+                    stat = stat_path.read_text()
+                    state = stat[stat.rfind(")") + 2]
+                    self.assertEqual(state, "Z", f"same-group child {pid_text} is still running")
+        finally:
+            if pid_file.exists():
+                for pid_text in pid_file.read_text().splitlines():
+                    try:
+                        os.kill(int(pid_text), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     def test_detached_child_holding_pipe_is_bounded_and_inconclusive(self):
         self.write("tracked.txt", b"BUGSIG")
