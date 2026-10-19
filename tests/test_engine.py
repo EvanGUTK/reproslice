@@ -74,7 +74,7 @@ class MinimizeTests(unittest.TestCase):
         self.base = git(self.repo, "rev-parse", "HEAD")
         (self.repo / "old.bin").unlink()
         self.write("new binary.bin", b"BUGSIG\x00\xff")
-        result = self.run_minimize(repeats=1, max_checks=20)
+        result = self.run_minimize(max_checks=20)
         self.assertEqual(set(result.report["kept_files"]), {"new binary.bin"})
         check_tree = Path(self.temp.name) / "verify"
         git(self.repo, "worktree", "add", "--detach", str(check_tree), self.base)
@@ -92,7 +92,7 @@ class MinimizeTests(unittest.TestCase):
         self.base = git(self.repo, "rev-parse", "HEAD")
         (self.repo / "old binary.bin").unlink()
         check = "test -e 'old binary.bin' || { echo BUGSIG; exit 1; }"
-        result = self.run_minimize(check=check, repeats=1, max_checks=20)
+        result = self.run_minimize(check=check, max_checks=20)
         self.assertEqual(result.report["kept_files"], ["old binary.bin"])
         check_tree = Path(self.temp.name) / "verify-delete"
         git(self.repo, "worktree", "add", "--detach", str(check_tree), self.base)
@@ -154,6 +154,30 @@ class MinimizeTests(unittest.TestCase):
         with self.assertRaisesRegex(ReproSliceError, "output exceeded"):
             self.run_minimize(check="yes x", timeout=3)
 
+    def test_background_descendants_are_killed_after_shell_exit(self):
+        self.write("tracked.txt", b"BUGSIG")
+        command = "if grep -q BUGSIG tracked.txt 2>/dev/null; then sleep 30 & echo BUGSIG; exit 1; else echo ok; fi"
+        result = self.run_minimize(check=command, timeout=3)
+        self.assertEqual(result.report["status"], "file_minimal")
+
+    def test_source_mutation_during_reduction_discards_result(self):
+        self.write("tracked.txt", b"BUGSIG")
+        from reproslice import engine
+
+        snapshot = engine._source_snapshot
+        calls = 0
+
+        def mutate_before_final_check(repo, base):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                (self.repo / "tracked.txt").write_bytes(b"changed while reducing")
+            return snapshot(repo, base)
+
+        with patch("reproslice.engine._source_snapshot", side_effect=mutate_before_final_check):
+            with self.assertRaisesRegex(ReproSliceError, "source changed during reduction"):
+                self.run_minimize()
+
     def test_budget_reserves_final_repeats_and_reports_exhaustion(self):
         self.write("tracked.txt", b"BUGSIG")
         self.write("noise.txt", b"noise")
@@ -166,6 +190,8 @@ class MinimizeTests(unittest.TestCase):
     def test_empty_signature_is_invalid(self):
         with self.assertRaisesRegex(ReproSliceError, "must be nonempty"):
             self.run_minimize(signature="")
+        with self.assertRaisesRegex(ReproSliceError, "at least 2"):
+            self.run_minimize(repeats=1)
 
 
 if __name__ == "__main__":

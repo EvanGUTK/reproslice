@@ -67,6 +67,18 @@ def _safe_repo(repo: Path) -> Path:
     return root
 
 
+def _source_snapshot(repo: Path, base: str) -> dict[str, bytes]:
+    names_raw = _git(repo, "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", base, "--")
+    names = [_validate_path(part) for part in names_raw.split(b"\0") if part]
+    return {
+        path: _git(
+            repo, "diff", "--binary", "--full-index", "--no-renames",
+            "--no-ext-diff", "--no-textconv", base, "--", f":(literal){path}",
+        )
+        for path in names
+    }
+
+
 def _validate_path(raw: bytes) -> str:
     path = os.fsdecode(raw)
     posix = PurePosixPath(path)
@@ -83,6 +95,8 @@ def _run_command(repo: Path, base: str, patch: bytes, command: str, timeout: flo
     """Run once in a new disposable worktree; return (outcome, detail)."""
     temp_root = Path(tempfile.mkdtemp(prefix="reproslice-run-"))
     worktree = temp_root / "tree"
+    process = None
+    readers = []
     try:
         _git(repo, "worktree", "add", "--detach", "--force", os.fspath(worktree), base)
         if patch:
@@ -139,10 +153,14 @@ def _run_command(repo: Path, base: str, patch: bytes, command: str, timeout: flo
             except ProcessLookupError:
                 pass
             process.wait()
+        # A shell can exit while a background child still holds its pipes.
+        # Kill the whole candidate process group before waiting for EOF.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         for reader in readers:
             reader.join(timeout=2)
-        for pipe in (process.stdout, process.stderr):
-            pipe.close()
         text = output.decode("utf-8", "replace")
         if timed_out:
             return "inconclusive", f"command timed out after {timeout:g}s"
@@ -156,6 +174,24 @@ def _run_command(repo: Path, base: str, patch: bytes, command: str, timeout: flo
     except (OSError, subprocess.SubprocessError) as exc:
         return "inconclusive", f"could not run candidate: {exc}"
     finally:
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            for reader in readers:
+                reader.join(timeout=2)
+            for pipe in (process.stdout, process.stderr):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
         if worktree.exists():
             try:
                 _git(repo, "worktree", "remove", "--force", os.fspath(worktree))
@@ -196,8 +232,8 @@ def minimize(
         raise ReproSliceError("timeout must be a positive number")
     if not math.isfinite(float(timeout)):
         raise ReproSliceError("timeout must be finite")
-    if not isinstance(repeats, int) or isinstance(repeats, bool) or repeats < 1:
-        raise ReproSliceError("repeats must be a positive integer")
+    if not isinstance(repeats, int) or isinstance(repeats, bool) or repeats < 2:
+        raise ReproSliceError("repeats must be an integer of at least 2")
     if not isinstance(max_checks, int) or isinstance(max_checks, bool) or max_checks < 3 * repeats:
         raise ReproSliceError(f"max_checks must be at least {3 * repeats} to check base, patch, and final confirmation")
 
@@ -205,17 +241,16 @@ def minimize(
         raise ReproSliceError("base must be a nonempty commit reference")
     root = _safe_repo(Path(repo))
     resolved_base = _git(root, "rev-parse", "--verify", f"{base}^{{commit}}").decode().strip()
-    names_raw = _git(root, "diff", "--name-only", "-z", "--no-renames", resolved_base, "--")
-    files = [_validate_path(part) for part in names_raw.split(b"\0") if part]
-    original_patch = _git(root, "diff", "--binary", "--full-index", "--no-renames", resolved_base, "--")
+    file_patches = _source_snapshot(root, resolved_base)
+    files = list(file_patches)
+    original_patch = b"".join(file_patches.values())
     fingerprint = hashlib.sha256(original_patch).hexdigest()
+    if _source_snapshot(root, resolved_base) != file_patches:
+        raise ReproSliceError("tracked source changed while the input patch was being captured; retry from a stable checkout")
     checks_run = 0
 
     def make_patch(selected: list[str]) -> bytes:
-        if not selected:
-            return b""
-        literal_paths = [f":(literal){path}" for path in selected]
-        return _git(root, "diff", "--binary", "--full-index", "--no-renames", resolved_base, "--", *literal_paths)
+        return b"".join(file_patches[path] for path in selected)
 
     def evaluate(patch: bytes, expected: str) -> bool:
         nonlocal checks_run
@@ -298,6 +333,8 @@ def minimize(
         raise ReproSliceError("internal budget reservation error: final confirmation cannot run")
     if not evaluate(final_patch, "target"):
         raise ReproSliceError("final reduced patch failed its repeated confirmation")
+    if _source_snapshot(root, resolved_base) != file_patches:
+        raise ReproSliceError("tracked source changed during reduction; result was discarded")
     kept_set = set(kept)
     return ReductionResult(
         patch=final_patch,
