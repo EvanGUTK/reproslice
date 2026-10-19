@@ -1,7 +1,9 @@
 from pathlib import Path
 import os
+import signal
 import subprocess
 import shlex
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -156,9 +158,48 @@ class MinimizeTests(unittest.TestCase):
 
     def test_background_descendants_are_killed_after_shell_exit(self):
         self.write("tracked.txt", b"BUGSIG")
-        command = "if grep -q BUGSIG tracked.txt 2>/dev/null; then sleep 30 & echo BUGSIG; exit 1; else echo ok; fi"
+        command = "if grep -q BUGSIG tracked.txt 2>/dev/null; then sleep 30 >/dev/null 2>&1 & echo BUGSIG; exit 1; else echo ok; fi"
         result = self.run_minimize(check=command, timeout=3)
         self.assertEqual(result.report["status"], "file_minimal")
+
+    def test_detached_child_holding_pipe_is_bounded_and_inconclusive(self):
+        self.write("tracked.txt", b"BUGSIG")
+        pid_file = Path(self.temp.name) / "detached-pids"
+        command_code = (
+            "import pathlib,subprocess,sys; p=pathlib.Path('tracked.txt'); "
+            "found=p.exists() and 'BUGSIG' in p.read_text(); "
+            "child=subprocess.Popen(['sleep','60'],start_new_session=True) if found else None; "
+            "open(" + repr(str(pid_file)) + ",'a').write(str(child.pid)+'\\n') if child else None; "
+            "print('BUGSIG' if found else 'ok',flush=True); sys.exit(1 if found else 0)"
+        )
+        command = "python3 -c " + shlex.quote(command_code)
+        src = Path(__file__).resolve().parents[1] / "src"
+        supervisor = (
+            "import sys\n"
+            "sys.path.insert(0, " + repr(str(src)) + ")\n"
+            "from pathlib import Path\n"
+            "from reproslice.engine import minimize, ReproSliceError\n"
+            "try:\n    minimize(Path(" + repr(str(self.repo)) + "), " + repr(self.base) + ", " +
+            repr(command) + ", 'BUGSIG', timeout=0.2, max_checks=6, repeats=2)\n"
+            "except ReproSliceError as e:\n    print(str(e))\n    sys.exit(0 if 'inconclusive' in str(e) else 3)\n"
+            "sys.exit(4)\n"
+        )
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        try:
+            result = subprocess.run([sys.executable, "-c", supervisor], text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=5, env=env, check=False)
+        finally:
+            if pid_file.exists():
+                for pid_text in pid_file.read_text().splitlines():
+                    try:
+                        os.kill(int(pid_text), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("inconclusive", result.stdout)
+        self.assertIn("detached descendants cannot be contained", result.stdout)
 
     def test_source_mutation_during_reduction_discards_result(self):
         self.write("tracked.txt", b"BUGSIG")

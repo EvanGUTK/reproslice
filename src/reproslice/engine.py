@@ -8,11 +8,11 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import selectors
 import shutil
 import signal
 import subprocess
 import tempfile
-import threading
 import time
 
 
@@ -96,76 +96,80 @@ def _run_command(repo: Path, base: str, patch: bytes, command: str, timeout: flo
     temp_root = Path(tempfile.mkdtemp(prefix="reproslice-run-"))
     worktree = temp_root / "tree"
     process = None
-    readers = []
+    selector = None
     try:
         _git(repo, "worktree", "add", "--detach", "--force", os.fspath(worktree), base)
         if patch:
             _git(worktree, "apply", "--binary", "--whitespace=nowarn", "-", input=patch)
         process = subprocess.Popen(
             command, cwd=worktree, shell=True, executable="/bin/sh",
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
             env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
         )
+        output_fd = process.stdout.fileno()
+        os.set_blocking(output_fd, False)
+        selector = selectors.DefaultSelector()
+        selector.register(output_fd, selectors.EVENT_READ)
         output = bytearray()
-        output_lock = threading.Lock()
-        overflow = threading.Event()
-
-        def drain(stream) -> None:
-            while True:
-                chunk = stream.read(65536)
-                if not chunk:
-                    return
-                with output_lock:
-                    room = _MAX_OUTPUT_BYTES - len(output)
-                    if room > 0:
-                        output.extend(chunk[:room])
-                    if len(chunk) > room:
-                        overflow.set()
-                if overflow.is_set():
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-
-        readers = [threading.Thread(target=drain, args=(pipe,), daemon=True)
-                   for pipe in (process.stdout, process.stderr)]
-        for reader in readers:
-            reader.start()
         start = time.monotonic()
+        deadline = start + timeout
+        pipe_eof = False
         timed_out = False
-        while process.poll() is None:
-            if overflow.is_set():
-                break
-            if time.monotonic() - start >= timeout:
+        overflow = False
+        leader_exited_before_cleanup = False
+        while process.poll() is None or not pipe_eof:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 timed_out = True
                 break
-            time.sleep(min(0.02, max(0.001, timeout / 100)))
-        if timed_out or overflow.is_set():
+            events = selector.select(min(remaining, 0.05))
+            for key, _ in events:
+                while True:
+                    try:
+                        chunk = os.read(key.fd, min(65536, _MAX_OUTPUT_BYTES + 1 - len(output)))
+                    except BlockingIOError:
+                        break
+                    if not chunk:
+                        pipe_eof = True
+                        selector.unregister(key.fd)
+                        break
+                    room = _MAX_OUTPUT_BYTES - len(output)
+                    output.extend(chunk[:room])
+                    if len(chunk) > room:
+                        overflow = True
+                        break
+                if overflow:
+                    break
+            if overflow:
+                break
+        # A check leader may exit while a detached descendant keeps the output
+        # pipe open. Never treat the captured prefix as a complete oracle result.
+        leader_exited_before_cleanup = process.poll() is not None
+        if timed_out or overflow:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            # Reap any same-group background child that closed its output pipes.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
         try:
-            process.wait(timeout=2)
+            process.wait(timeout=1)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            process.kill()
             process.wait()
-        # A shell can exit while a background child still holds its pipes.
-        # Kill the whole candidate process group before waiting for EOF.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        for reader in readers:
-            reader.join(timeout=2)
         text = output.decode("utf-8", "replace")
         if timed_out:
-            return "inconclusive", f"command timed out after {timeout:g}s"
-        if overflow.is_set():
+            if leader_exited_before_cleanup and not pipe_eof:
+                return "inconclusive", "command leader exited but a descendant kept its output pipe open; detached descendants cannot be contained"
+            return "inconclusive", f"command timed out after {timeout:g}s before process exit and complete output"
+        if overflow:
             return "inconclusive", f"command output exceeded {_MAX_OUTPUT_BYTES} bytes"
+        if not pipe_eof:
+            return "inconclusive", "command exited but a descendant kept its output pipe open; detached descendants cannot be contained"
         if process.returncode is None or process.returncode < 0 or process.returncode >= 128:
             return "inconclusive", f"command exited abnormally ({process.returncode})"
         return ("exit-zero" if process.returncode == 0 else "exit-nonzero"), text
@@ -184,14 +188,14 @@ def _run_command(repo: Path, base: str, patch: bytes, command: str, timeout: flo
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-            for reader in readers:
-                reader.join(timeout=2)
             for pipe in (process.stdout, process.stderr):
                 if pipe is not None:
                     try:
                         pipe.close()
                     except OSError:
                         pass
+        if selector is not None:
+            selector.close()
         if worktree.exists():
             try:
                 _git(repo, "worktree", "remove", "--force", os.fspath(worktree))
@@ -218,7 +222,9 @@ def minimize(
 
     ``check`` is trusted shell input and runs in disposable worktrees; it is not
     an operating-system sandbox. Candidate checks are bounded by ``timeout``
-    and one MiB of captured output per execution.
+    and one MiB of captured output per execution. A detached descendant that
+    keeps stdout open makes the result inconclusive; escaped processes are not
+    sandboxed or fully reclaimed.
     """
     if not isinstance(check, str) or not check.strip():
         raise ReproSliceError("check command must be a nonempty string")
