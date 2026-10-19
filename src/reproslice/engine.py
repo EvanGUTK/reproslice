@@ -254,7 +254,7 @@ def minimize(
     def make_patch(selected: list[str]) -> bytes:
         return b"".join(file_patches[path] for path in selected)
 
-    def evaluate(patch: bytes, expected: str) -> bool:
+    def evaluate(patch: bytes, expected: str, *, strict: bool = True) -> bool:
         nonlocal checks_run
         outcomes: list[str] = []
         for _ in range(repeats):
@@ -264,11 +264,16 @@ def minimize(
                 raise ReproSliceError(f"candidate check was inconclusive: {detail}")
             target = outcome == "exit-nonzero" and signature in detail
             if outcome == "exit-nonzero" and not target:
-                raise ReproSliceError("candidate had a nonzero exit without the requested signature text; treating it as an incidental failure")
-            outcomes.append("target" if target else "pass")
+                if strict:
+                    raise ReproSliceError("candidate had a nonzero exit without the requested signature text; treating it as an incidental failure")
+                outcomes.append("other-failure")
+            else:
+                outcomes.append("target" if target else "pass")
         if len(set(outcomes)) != 1:
             raise ReproSliceError("candidate result was inconsistent across repeats")
         actual = outcomes[0]
+        if actual == "other-failure":
+            return False
         if expected == "target" and actual != "target":
             return False
         if expected == "pass" and actual != "pass":
@@ -288,7 +293,7 @@ def minimize(
         if checks_run + 2 * repeats > max_checks:
             budget_exhausted = True
             return None
-        return evaluate(make_patch(candidate), "target")
+        return evaluate(make_patch(candidate), "target", strict=False)
 
     # Classic complement-based ddmin, with deterministic path ordering.
     granularity = 2
@@ -321,6 +326,9 @@ def minimize(
         index = 0
         while index < len(kept):
             candidate = kept[:index] + kept[index + 1:]
+            if not candidate:
+                index += 1
+                continue
             preserves = candidate_preserves(candidate)
             if preserves is None:
                 break

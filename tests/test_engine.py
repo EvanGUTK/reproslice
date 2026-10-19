@@ -69,6 +69,18 @@ class MinimizeTests(unittest.TestCase):
         self.assertIn(b"BUGSIG", result.patch)
         self.assertEqual(result.report["checks_run"] % 2, 0)
 
+    def test_reduction_trials_keep_dependencies_on_incidental_failures(self):
+        self.write("app.py", b"print('base ok')\n")
+        git(self.repo, "commit", "-qm", "add base app")
+        self.base = git(self.repo, "rev-parse", "HEAD")
+        self.write("app.py", b"from helper import VALUE\nprint(VALUE)\nraise SystemExit(1)\n")
+        self.write("helper.py", b"VALUE = 'BUGSIG'\n")
+        self.write("noise.txt", b"irrelevant\n")
+        result = self.run_minimize(check="python3 app.py")
+        self.assertEqual(result.report["status"], "file_minimal")
+        self.assertEqual(set(result.report["kept_files"]), {"app.py", "helper.py"})
+        self.assertEqual(result.report["dropped_files"], ["noise.txt"])
+
     def test_binary_addition_round_trip(self):
         self.write("old.bin", b"old\x00\xff")
         git(self.repo, "add", "old.bin")
@@ -256,6 +268,13 @@ class MinimizeTests(unittest.TestCase):
             self.run_minimize(max_checks=5)
         result = self.run_minimize(max_checks=6)
         self.assertEqual(result.report["status"], "budget_exhausted")
+        self.assertEqual(result.report["checks_run"], 6)
+
+    def test_single_file_fits_minimality_check_in_reserved_budget(self):
+        self.write("tracked.txt", b"BUGSIG")
+        result = self.run_minimize(max_checks=6)
+        self.assertEqual(result.report["status"], "file_minimal")
+        self.assertEqual(result.report["kept_files"], ["tracked.txt"])
         self.assertEqual(result.report["checks_run"], 6)
 
     def test_empty_signature_is_invalid(self):
